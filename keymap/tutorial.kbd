@@ -193,7 +193,13 @@
   provided, KMonad will only capture those devices that match the provided
   product string. If you would like to provide a product string, you can run
   `make; ./list-keyboards' in c_src/mac to list the product strings of all
-  connected keyboards.
+  connected keyboards. This legacy selector can match multiple identical
+  keyboards. To seize one current keyboard only, use:
+    (iokit-registry-id 123456)
+
+  `list-keyboards' prints one JSON object per keyboard, including each registry
+  ID. Registry IDs are valid for the currently connected IOKit device only; a
+  supervisor must rediscover the ID when a keyboard reconnects.
 
   You initialize output on MacOS using:
     (kext)

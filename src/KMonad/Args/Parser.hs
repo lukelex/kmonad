@@ -342,9 +342,11 @@ itokens =
   [ ("device-file"   , KDeviceSource . unpack <$> textP <*> ignoreMissingP)
   , ("low-level-hook", pure KLowLevelHookSource)
   , ("iokit-name"    , KIOKitSource <$> optional textP)
+  , ("iokit-registry-id", KIOKitRegistryID <$> registryIDP)
   ]
  where
   ignoreMissingP = option False $ optargP "ignore-missing" boolP
+  registryIDP = terminated L.decimal
 
 -- | Parse an output token
 otokenP :: Parser OToken

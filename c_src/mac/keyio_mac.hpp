@@ -4,6 +4,9 @@
 #include <errno.h>
 #include <thread>
 #include <map>
+#include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <iostream>
 #include <mach/mach_error.h>
 #include <AvailabilityMacros.h>
@@ -37,7 +40,14 @@ static std::thread thread;
 static CFRunLoopRef listener_loop;
 static std::map<io_service_t,IOHIDDeviceRef> source_device;
 static int fd[2];
-static char *prod = nullptr;
+
+struct DeviceSelector {
+    char *product;
+    bool use_registry_id;
+    uint64_t registry_id;
+};
+
+static DeviceSelector selector = {nullptr, false, 0};
 
 void print_iokit_error(const char *fname, int freturn = 0) {
     std::cerr << fname << " error";
@@ -65,23 +75,37 @@ void input_callback(void *context, IOReturn result, void *sender, IOHIDValueRef 
     write(fd[1], &e, sizeof(struct KeyEvent));
 }
 
-void open_matching_devices(char *product, io_iterator_t iter) {
-    io_name_t name;
-    kern_return_t kr;
-    CFStringRef cfproduct = NULL;
-    if(product) {
-        cfproduct = CFStringCreateWithCString(kCFAllocatorDefault, product, CFStringGetSystemEncoding());
-        if(cfproduct == NULL) {
-            print_iokit_error("CFStringCreateWithCString");
-            return;
+bool matches_selector(io_service_t device, CFStringRef product, DeviceSelector *selector) {
+    if (selector->use_registry_id) {
+        uint64_t registry_id;
+        kern_return_t kr = IORegistryEntryGetRegistryEntryID(device, &registry_id);
+        if (kr != KERN_SUCCESS) {
+            print_iokit_error("IORegistryEntryGetRegistryEntryID", kr);
+            return false;
         }
+        return registry_id == selector->registry_id;
     }
+
+    if (!selector->product) {
+        return true;
+    }
+
+    CFStringRef requested = CFStringCreateWithCString(
+        kCFAllocatorDefault, selector->product, CFStringGetSystemEncoding());
+    if (!requested) {
+        print_iokit_error("CFStringCreateWithCString");
+        return false;
+    }
+    bool matches = CFStringCompare(product, requested, 0) == kCFCompareEqualTo;
+    CFRelease(requested);
+    return matches;
+}
+
+void open_matching_devices(DeviceSelector *selector, io_iterator_t iter) {
+    kern_return_t kr;
     CFStringRef cfkarabiner = CFStringCreateWithCString(kCFAllocatorDefault, "Karabiner ", CFStringGetSystemEncoding());
     if(cfkarabiner == NULL) {
         print_iokit_error("CFStringCreateWithCString");
-        if(product) {
-            CFRelease(cfproduct);
-        }
         return;
     }
     for(mach_port_t curr = IOIteratorNext(iter); curr; curr = IOIteratorNext(iter)) {
@@ -92,23 +116,25 @@ void open_matching_devices(char *product, io_iterator_t iter) {
         }
 
         // any device named "Karabiner ..." should be ignored
-        bool match = !CFStringHasPrefix(cfcurr, cfkarabiner);
-        if(product) {
-            match = match && (CFStringCompare(cfcurr, cfproduct, 0) == kCFCompareEqualTo);
-        }
+        bool match = !CFStringHasPrefix(cfcurr, cfkarabiner)
+            && matches_selector(curr, cfcurr, selector);
         CFRelease(cfcurr);
-        if(!match) continue;
+        if(!match) {
+            IOObjectRelease(curr);
+            continue;
+        }
         IOHIDDeviceRef dev = IOHIDDeviceCreate(kCFAllocatorDefault, curr);
-        source_device[curr] = dev;
         IOHIDDeviceRegisterInputValueCallback(dev, input_callback, NULL);
         kr = IOHIDDeviceOpen(dev, kIOHIDOptionsTypeSeizeDevice);
         if(kr != kIOReturnSuccess) {
             print_iokit_error("IOHIDDeviceOpen", kr);
+            CFRelease(dev);
+            IOObjectRelease(curr);
+            continue;
         }
+        source_device[curr] = dev;
         IOHIDDeviceScheduleWithRunLoop(dev, listener_loop, kCFRunLoopDefaultMode);
-    }
-    if(product) {
-        CFRelease(cfproduct);
+        IOObjectRelease(curr);
     }
     CFRelease(cfkarabiner);
 }
@@ -119,8 +145,7 @@ void open_matching_devices(char *product, io_iterator_t iter) {
  *
  */
 void matched_callback(void *context, io_iterator_t iter) {
-    char *product = (char *)context;
-    open_matching_devices(product, iter);
+    open_matching_devices((DeviceSelector *)context, iter);
 }
 
 /*
@@ -130,7 +155,13 @@ void matched_callback(void *context, io_iterator_t iter) {
  */
 void terminated_callback(void *context, io_iterator_t iter) {
     for(mach_port_t curr = IOIteratorNext(iter); curr; curr = IOIteratorNext(iter)) {
-        source_device.erase(curr);
+        auto it = source_device.find(curr);
+        if (it != source_device.end()) {
+            IOHIDDeviceClose(it->second, kIOHIDOptionsTypeSeizeDevice);
+            CFRelease(it->second);
+            source_device.erase(it);
+        }
+        IOObjectRelease(curr);
     }
 }
 
@@ -147,7 +178,7 @@ extern "C" int wait_key(struct KeyEvent *e) {
  * new input from the user is available from that keyboard. Then
  * sleeps indefinitely, ready to received asynchronous callbacks.
  */
-void monitor_kb(char *product) {
+void monitor_kb(DeviceSelector *selector) {
     kern_return_t kr;
     CFMutableDictionaryRef matching_dictionary = IOServiceMatching(kIOHIDDeviceKey);
     if(!matching_dictionary) {
@@ -164,32 +195,33 @@ void monitor_kb(char *product) {
     cfValue = CFNumberCreate( kCFAllocatorDefault, kCFNumberSInt32Type, &value );
     CFDictionarySetValue(matching_dictionary,CFSTR(kIOHIDDeviceUsageKey),cfValue);
     CFRelease(cfValue);
-    io_iterator_t iter = IO_OBJECT_NULL;
-    CFRetain(matching_dictionary);
-    kr = IOServiceGetMatchingServices(kIOMainPortDefault,
-                                      matching_dictionary,
-                                      &iter);
-    if(kr != KERN_SUCCESS) {
-        print_iokit_error("IOServiceGetMatchingServices", kr);
+    listener_loop = CFRunLoopGetCurrent();
+    IONotificationPortRef notification_port = IONotificationPortCreate(kIOMainPortDefault);
+    if (!notification_port) {
+        print_iokit_error("IONotificationPortCreate");
+        CFRelease(matching_dictionary);
         return;
     }
-    listener_loop = CFRunLoopGetCurrent();
-    open_matching_devices(product, iter);
-    IONotificationPortRef notification_port = IONotificationPortCreate(kIOMainPortDefault);
     CFRunLoopSourceRef notification_source = IONotificationPortGetRunLoopSource(notification_port);
     CFRunLoopAddSource(listener_loop, notification_source, kCFRunLoopDefaultMode);
+
+    io_iterator_t iter = IO_OBJECT_NULL;
     CFRetain(matching_dictionary);
     kr = IOServiceAddMatchingNotification(notification_port,
                                           kIOMatchedNotification,
                                           matching_dictionary,
                                           matched_callback,
-                                          product,
+                                          selector,
                                           &iter);
     if(kr != KERN_SUCCESS) {
         print_iokit_error("IOServiceAddMatchingNotification", kr);
+        IONotificationPortDestroy(notification_port);
+        CFRelease(matching_dictionary);
         return;
     }
-    for(mach_port_t curr = IOIteratorNext(iter); curr; curr = IOIteratorNext(iter)) {}
+    matched_callback(selector, iter);
+
+    CFRetain(matching_dictionary);
     kr = IOServiceAddMatchingNotification(notification_port,
                                           kIOTerminatedNotification,
                                           matching_dictionary,
@@ -198,16 +230,22 @@ void monitor_kb(char *product) {
                                           &iter);
     if(kr != KERN_SUCCESS) {
         print_iokit_error("IOServiceAddMatchingNotification", kr);
+        IONotificationPortDestroy(notification_port);
+        CFRelease(matching_dictionary);
         return;
     }
-    for(mach_port_t curr = IOIteratorNext(iter); curr; curr = IOIteratorNext(iter)) {}
+    terminated_callback(NULL, iter);
+    CFRelease(matching_dictionary);
     CFRunLoopRun();
     for(std::pair<const io_service_t,IOHIDDeviceRef> p: source_device) {
         kr = IOHIDDeviceClose(p.second,kIOHIDOptionsTypeSeizeDevice);
         if(kr != KERN_SUCCESS) {
             print_iokit_error("IOHIDDeviceClose", kr);
         }
+        CFRelease(p.second);
     }
+    source_device.clear();
+    IONotificationPortDestroy(notification_port);
 }
 
 /*
@@ -220,17 +258,18 @@ void monitor_kb(char *product) {
  * Loads a karabiner kernel extension that will send key events
  * back to the OS.
  */
-extern "C" int grab_kb(char *product) {
+extern "C" int grab_kb(char *product, uint64_t registry_id, uint8_t use_registry_id) {
     // Source
     if (pipe(fd) == -1) {
         std::cerr << "pipe error: " << errno << std::endl;
         return errno;
     }
-    if(product) {
-        prod = (char *)malloc(strlen(product) + 1);
-        strcpy(prod, product);
+    if(product && !use_registry_id) {
+        selector.product = strdup(product);
     }
-    thread = std::thread{monitor_kb, prod};
+    selector.use_registry_id = use_registry_id;
+    selector.registry_id = registry_id;
+    thread = std::thread{monitor_kb, &selector};
     // Sink
     return init_sink();
 }
@@ -243,14 +282,15 @@ extern "C" int release_kb() {
     int retval = 0;
     kern_return_t kr;
     // Source
-    if(thread.joinable()) {
+    if(thread.joinable() && listener_loop) {
         CFRunLoopStop(listener_loop);
         thread.join();
     } else {
         std::cerr << "No thread was running!" << std::endl;
     }
-    if(prod) {
-        free(prod);
+    if(selector.product) {
+        free(selector.product);
+        selector.product = nullptr;
     }
     if (close(fd[0]) == -1) {
         std::cerr << "close error: " << errno << std::endl;

@@ -1,0 +1,51 @@
+name: kmonad
+
+x-development: &development
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: development
+  working_dir: /workspace
+  init: true
+  volumes:
+    - .:/workspace
+    - .git:/workspace/.git
+    - cabal-cache:/root/.cabal
+    - cabal-store:/root/.local/state/cabal/store
+
+x-git: &git
+  build:
+    context: .
+    dockerfile: Dockerfile.git
+  working_dir: /workspace
+  init: true
+  volumes:
+    - .:/workspace
+    - .git:/workspace/.git
+    - cabal-cache:/root/.cabal
+    - cabal-store:/root/.local/state/cabal/store
+    - ${HOME}/.ssh:/root/.ssh:ro
+
+services:
+  dev:
+    <<: *development
+    command: ["sleep", "infinity"]
+    stdin_open: true
+    tty: true
+
+  test:
+    <<: *development
+    command:
+      - cabal
+      - test
+      - all
+      - --enable-tests
+      - --test-show-details=direct
+
+  git:
+    <<: *git
+    command: ["sleep", "infinity"]
+
+volumes:
+  cabal-cache:
+  cabal-store:

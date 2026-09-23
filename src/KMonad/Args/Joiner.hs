@@ -293,6 +293,7 @@ pickInput :: IToken -> J (LogFunc -> IO (Acquire KeySource))
 pickInput (KDeviceSource f im) = pure $ runLF (deviceSource64 f im)
 pickInput KLowLevelHookSource = throwError $ InvalidOS "LowLevelHookSource"
 pickInput (KIOKitSource _)    = throwError $ InvalidOS "IOKitSource"
+pickInput (KIOKitRegistryID _) = throwError $ InvalidOS "IOKitRegistryIDSource"
 
 -- | The Linux correspondence between OToken and actual code
 pickOutput :: OToken -> J (LogFunc -> IO (Acquire KeySink))
@@ -311,6 +312,7 @@ pickInput :: IToken -> J (LogFunc -> IO (Acquire KeySource))
 pickInput KLowLevelHookSource = pure $ runLF llHook
 pickInput (KDeviceSource _ _) = throwError $ InvalidOS "DeviceSource"
 pickInput (KIOKitSource _)    = throwError $ InvalidOS "IOKitSource"
+pickInput (KIOKitRegistryID _) = throwError $ InvalidOS "IOKitRegistryIDSource"
 
 -- | The Windows correspondence between OToken and actual code
 pickOutput :: OToken -> J (LogFunc -> IO (Acquire KeySink))
@@ -325,6 +327,7 @@ pickOutput KKextSink           = throwError $ InvalidOS "KextSink"
 -- | The Mac correspondence between IToken and actual code
 pickInput :: IToken -> J (LogFunc -> IO (Acquire KeySource))
 pickInput (KIOKitSource name) = pure $ runLF (iokitSource (T.unpack <$> name))
+pickInput (KIOKitRegistryID registryID) = pure $ runLF (iokitRegistryIDSource registryID)
 pickInput (KDeviceSource _ _) = throwError $ InvalidOS "DeviceSource"
 pickInput KLowLevelHookSource = throwError $ InvalidOS "LowLevelHookSource"
 

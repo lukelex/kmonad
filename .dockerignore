@@ -11,3 +11,6 @@ template/testing.kbd
 bin/
 result
 kmonad
+.git
+c_src/mac/Karabiner-DriverKit-VirtualHIDDevice
+c_src/mac/Karabiner-VirtualHIDDevice

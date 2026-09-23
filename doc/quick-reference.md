@@ -58,9 +58,17 @@ supported systems:
   - MacOS:
 
     ```clojure
-    input  (iokit-name "my-keyboard-product-string")
+    input  (iokit-registry-id 123456)
     output (kext)
     ```
+
+    `iokit-registry-id` seizes exactly one currently connected keyboard. Use
+    `list-keyboards` to obtain its ID. Registry IDs are intentionally not a
+    durable configuration identifier: a device reconnect can receive a new ID,
+    so a supervising manager must rediscover it before restarting KMonad.
+    `iokit-name` remains available for legacy configurations, but it can match
+    more than one keyboard and is unsuitable for independent per-keyboard
+    mappings.
 
 ## Other Configuration Options
 

@@ -173,7 +173,8 @@ data IToken
   = KDeviceSource FilePath Bool
   | KLowLevelHookSource
   | KIOKitSource (Maybe Text)
-  deriving (Show)
+  | KIOKitRegistryID Word64
+  deriving (Show, Eq)
 
 -- | All different output-tokens KMonad can take
 data OToken

@@ -194,6 +194,7 @@ test-suite spec
     , hspec
     , rio
   other-modules:
+      KMonad.ArgsSpec
       KMonad.ButtonDocSpec
       KMonad.GestureSpec
       KMonad.ComposeSeqSpec
